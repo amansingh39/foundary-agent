@@ -384,7 +384,8 @@ def headers(resp):
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Content-Security-Policy"] = (
-        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+        "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; script-src 'self'; "
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     )
     resp.headers["Cache-Control"] = "no-store" if request.path.startswith("/api/") else "no-cache"
@@ -414,6 +415,12 @@ def unexpected(e):
 @app.get("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    """The page carries its icon inline; answer browsers that ask anyway."""
+    return "", 204
 
 
 @app.get("/healthz")

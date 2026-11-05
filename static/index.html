@@ -3,80 +3,111 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>Agent Chat</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b4bdb'/%3E%3Cpath d='M9 11h14v9H15l-4 3v-3H9z' fill='white'/%3E%3C/svg%3E">
+<meta name="color-scheme" content="dark light">
+<title>AuthSec Agent Console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0F14'/%3E%3Cpath d='M16 6l8 3v6c0 5-3.4 9-8 11-4.6-2-8-6-8-11V9z' fill='none' stroke='%23F2B33D' stroke-width='2.2' stroke-linejoin='round'/%3E%3Cpath d='M12.5 16l2.5 2.5 4.5-5' fill='none' stroke='%23F2B33D' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <h1>Agent chat <small id="agent"></small></h1>
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M16 4l9 3.4v6.8c0 5.7-3.8 10.2-9 12.4-5.2-2.2-9-6.7-9-12.4V7.4z" />
+      <path class="tick" d="M12 16.2l2.8 2.8 5.2-5.6" />
+    </svg>
+    <span class="brand-name">AuthSec</span>
+    <span class="brand-sub">Agent console</span>
+  </div>
+  <span class="agent-chip" id="agent" title="Foundry agent">agent</span>
   <nav class="tabs" aria-label="View">
     <button type="button" data-view="chat" aria-pressed="true">Chat</button>
     <button type="button" data-view="runner" aria-pressed="false">Test runner</button>
   </nav>
+  <span class="spacer"></span>
   <input id="pass" type="password" placeholder="Passcode" autocomplete="off" aria-label="Passcode" hidden>
-  <button id="new" type="button">New chat</button>
+  <button id="libToggle" class="ghost narrow-only" type="button" aria-controls="library" aria-expanded="false">Prompts</button>
+  <button id="new" class="ghost" type="button">New chat</button>
 </header>
 
-<main id="chatView">
-  <div class="scroll" id="scroll"><div class="wrap" id="log" aria-live="polite"></div></div>
-  <footer>
-    <div class="wrap">
-      <form id="form">
-        <textarea id="input" rows="1" maxlength="4000" aria-label="Message"
-          placeholder="Message the agent… (Enter to send, Shift+Enter for a new line)"></textarea>
-        <button class="primary" id="send" type="submit">Send</button>
-      </form>
+<div id="chatView" class="view chat-layout">
+  <aside id="library" class="library" aria-labelledby="libHead">
+    <div class="lib-head">
+      <h2 id="libHead">Prompt library</h2>
+      <span id="libCount" class="count"></span>
     </div>
-  </footer>
-</main>
+    <input id="libSearch" type="search" placeholder="Filter by name, service or text" aria-label="Filter prompts">
+    <ul id="libList" class="lib-list"></ul>
+    <p class="lib-foot">Add, edit or remove prompts in <b>Test runner</b> → Edit catalog.</p>
+  </aside>
 
-<main id="runnerView" hidden>
-  <div class="scroll"><div class="wrap runner">
-    <section aria-labelledby="catHead">
-      <div class="bar">
-        <h2 id="catHead">Prompt catalog</h2>
-        <span class="spacer"></span>
-        <span id="adminState" class="muted"></span>
-        <input id="adminPass" type="password" placeholder="Admin passcode" autocomplete="off" aria-label="Admin passcode" hidden>
-        <button id="adminBtn" type="button" hidden>Edit catalog</button>
+  <section class="chat" aria-label="Conversation">
+    <div class="scroll" id="scroll"><div class="thread" id="log" aria-live="polite"></div></div>
+    <form id="form" class="composer">
+      <textarea id="input" rows="1" maxlength="4000" aria-label="Message"
+        placeholder="Message the agent…"></textarea>
+      <button class="primary send" id="send" type="submit" aria-label="Send">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg>
+      </button>
+    </form>
+  </section>
+</div>
+
+<div id="runnerView" class="view" hidden>
+  <div class="scroll"><div class="runner">
+    <section aria-labelledby="catHead" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2 id="catHead">Prompt catalog</h2>
+          <p class="muted">Tick prompts and run them. Each one starts a new chat, one after another, so an earlier answer cannot leak into the next.</p>
+        </div>
+        <div class="bar">
+          <span id="adminState" class="muted small"></span>
+          <input id="adminPass" type="password" placeholder="Admin passcode" autocomplete="off" aria-label="Admin passcode" hidden>
+          <button id="adminBtn" class="ghost" type="button" hidden>Edit catalog</button>
+        </div>
       </div>
-      <p class="muted">Tick the prompts to test and press Run. Each prompt runs in a new chat, one after another, so an earlier answer cannot leak into the next.</p>
-      <div class="bar">
+      <div class="bar toolbar">
         <label class="check"><input type="checkbox" id="all"> Select all</label>
         <span class="spacer"></span>
-        <button id="addBtn" type="button" hidden>+ Add prompt</button>
-        <button id="resetBtn" type="button" hidden>Reset to defaults</button>
-        <button id="stop" type="button" hidden>Stop</button>
+        <button id="addBtn" class="ghost" type="button" hidden>+ Add prompt</button>
+        <button id="resetBtn" class="ghost" type="button" hidden>Reset to defaults</button>
+        <button id="stop" class="danger" type="button" hidden>Stop</button>
         <button id="run" class="primary" type="button" disabled>Run selected</button>
       </div>
       <form id="editor" class="editor" hidden>
         <label>Title<input id="edTitle" maxlength="120" required placeholder="P7 · What it tests"></label>
         <label>Resource<input id="edResource" maxlength="160" placeholder="Key Vault agentigatestkv01"></label>
-        <label>Prompt<textarea id="edText" rows="4" maxlength="4000" required></textarea></label>
+        <label>Prompt<textarea id="edText" rows="5" maxlength="4000" required></textarea></label>
         <div class="bar">
           <span id="edError" class="error-text"></span>
           <span class="spacer"></span>
-          <button id="edCancel" type="button">Cancel</button>
+          <button id="edCancel" class="ghost" type="button">Cancel</button>
           <button class="primary" type="submit">Save</button>
         </div>
       </form>
       <ul id="catalog" class="catalog"></ul>
     </section>
 
-    <section aria-labelledby="resHead">
-      <div class="bar">
-        <h2 id="resHead">Results</h2>
-        <span id="runState" class="muted"></span>
-        <span class="spacer"></span>
-        <button id="clear" type="button">Clear</button>
+    <section aria-labelledby="resHead" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2 id="resHead">Results</h2>
+          <p id="runState" class="muted">No run yet.</p>
+        </div>
+        <button id="clear" class="ghost" type="button">Clear</button>
       </div>
-      <div id="results" class="results"><p class="muted">No run yet.</p></div>
-      <p class="muted small">Allowed: the tool got data back. Denied: Azure answered 401/403 or "forbidden". Unknown: Foundry shows no result for this tool (built-in tools such as AI Search); read the reply.</p>
+      <div id="results" class="results"></div>
+      <p class="legend">
+        <span class="pill allowed">Allowed</span> the call got past Azure's permission check
+        <span class="pill denied">Denied</span> Azure answered 401 / 403 or "forbidden"
+        <span class="pill">Read reply</span> Foundry shows no raw result for this tool
+      </p>
     </section>
   </div></div>
-</main>
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

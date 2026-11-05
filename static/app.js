@@ -7,6 +7,7 @@ const input = $("input");
 const send = $("send");
 const pass = $("pass");
 
+let agentName = "the agent";
 let conversation = "";
 let busy = false;
 let prompts = [];          // the shared catalog
@@ -28,7 +29,7 @@ const local = {
 function el(tag, props, ...children) {
   const e = document.createElement(tag);
   Object.assign(e, props || {});
-  children.flat().forEach(c => e.append(c));
+  children.flat().forEach(c => { if (c !== null && c !== undefined && c !== false) e.append(c); });
   return e;
 }
 
@@ -43,6 +44,31 @@ async function api(path, opts = {}) {
   });
   const data = r.status === 204 ? {} : await r.json().catch(() => ({ error: "Unreadable answer (" + r.status + ")." }));
   return { ok: r.ok, status: r.status, data };
+}
+
+/* ---------- services named in a prompt's resource line ---------- */
+
+const SERVICES = [
+  { key: "kv", short: "KV", name: "Key Vault", match: /key ?vault/i },
+  { key: "st", short: "ST", name: "Storage", match: /storage|table|blob/i },
+  { key: "sb", short: "SB", name: "Service Bus", match: /service ?bus|queue/i },
+  { key: "sql", short: "SQL", name: "Azure SQL", match: /\bsql\b/i },
+  { key: "ais", short: "AIS", name: "AI Search", match: /ai ?search|search/i },
+];
+
+// One tag per service, with the resource name that follows it when there is one.
+function serviceTags(resource) {
+  const text = resource || "";
+  const tags = [];
+  text.split(/\s*\+\s*/).forEach(part => {
+    const svc = SERVICES.find(s => s.match.test(part));
+    if (!svc || tags.some(t => t.svc === svc)) return;
+    const name = (part.match(/\b([a-z0-9][a-z0-9-]{5,})\b/gi) || []).find(w => /\d|-/.test(w)) || "";
+    tags.push({ svc, name });
+  });
+  if (!tags.length && text) return el("div", { className: "services" }, el("span", { className: "svc", textContent: text }));
+  return el("div", { className: "services" }, tags.map(t =>
+    el("span", { className: "svc " + t.svc.key, title: text }, el("b", { textContent: t.svc.short }), t.name || t.svc.name)));
 }
 
 /* ---------- chat ---------- */
@@ -60,16 +86,16 @@ function render(target, text) {
 
 function toolLabel(c) {
   const v = c.verdict && c.verdict !== "unknown" ? c.verdict : c.status;
-  return [c.type.replace(/_call$/, ""), c.name, v].filter(Boolean).join(" · ");
+  return [c.name || c.type.replace(/_call$/, ""), v].filter(Boolean).join(" · ");
 }
 
 function add(kind, text, tools, reference) {
-  document.querySelector(".empty")?.remove();
-  const m = el("div", { className: "msg " + kind });
+  document.querySelector(".welcome")?.remove();
+  const who = { user: "You", agent: agentName, error: "Error" }[kind];
   const b = el("div", { className: "bubble" });
   render(b, text);
-  m.appendChild(b);
-  if (reference) m.appendChild(el("div", { className: "ref", textContent: "Reference: " + reference }));
+  const m = el("div", { className: "msg " + kind }, el("span", { className: "who", textContent: who }), b);
+  if (reference) m.appendChild(el("div", { className: "ref", textContent: "Reference " + reference }));
   if (tools && tools.length) {
     m.appendChild(el("div", { className: "tools" },
       tools.map(c => el("span", { className: "tool " + (c.verdict || c.status || ""), textContent: toolLabel(c) }))));
@@ -84,24 +110,17 @@ function add(kind, text, tools, reference) {
   return m;
 }
 
-function empty() {
-  log.replaceChildren();
-  const g = el("div", { className: "suggest" });
-  prompts.slice(0, 6).forEach(p => {
-    const b = el("button", { type: "button" }, el("b", { textContent: p.title }), p.resource || "");
-    b.addEventListener("click", () => ask(p.text));
-    g.appendChild(b);
-  });
-  log.appendChild(el("div", { className: "empty" },
-    el("h2", { textContent: "Ask the agent something" }),
-    el("p", { textContent: "Pick a test prompt or type your own. After you change a policy in AuthSec, " +
-      "start a New chat: in the same chat the agent may answer from what it already fetched." }),
-    g));
+function welcome() {
+  const mark = document.querySelector(".brand .mark").cloneNode(true);
+  log.replaceChildren(el("div", { className: "welcome" },
+    mark,
+    el("h2", { textContent: "Talk to " + agentName }),
+    el("p", { textContent: "Pick a prompt from the library, or type your own. After you change a policy in AuthSec, " +
+      "start a new chat: in the same chat the agent may answer from what it already fetched." })));
 }
 
 async function chatOnce(text, conversationId) {
-  const r = await api("/api/chat", { method: "POST", json: { message: text, conversation_id: conversationId } });
-  return r;
+  return api("/api/chat", { method: "POST", json: { message: text, conversation_id: conversationId } });
 }
 
 async function ask(text) {
@@ -110,7 +129,7 @@ async function ask(text) {
   busy = true; send.disabled = true;
   add("user", text);
   input.value = ""; grow();
-  const wait = add("agent", "Thinking…");
+  const wait = add("agent", "Working");
   wait.querySelector(".bubble").classList.add("thinking");
   try {
     const { ok, status, data } = await chatOnce(text, conversation);
@@ -132,8 +151,45 @@ async function ask(text) {
 
 function grow() {
   input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  input.style.height = Math.min(input.scrollHeight, 180) + "px";
 }
+
+/* ---------- prompt library (chat sidebar) ---------- */
+
+function renderLibrary() {
+  const q = $("libSearch").value.trim().toLowerCase();
+  const shown = prompts.filter(p => !q || [p.title, p.resource, p.text].join(" ").toLowerCase().includes(q));
+  $("libCount").textContent = q ? `${shown.length} of ${prompts.length}` : String(prompts.length);
+  const list = $("libList");
+  list.replaceChildren();
+  shown.forEach(p => {
+    const text = el("p", { className: "lib-text", textContent: p.text });
+    const item = el("li", { className: "lib-item" });
+    const more = el("button", { type: "button", className: "more", textContent: "Show all" });
+    more.addEventListener("click", () => {
+      const open = item.classList.toggle("open");
+      more.textContent = open ? "Show less" : "Show all";
+    });
+    const use = el("button", { type: "button", className: "ghost", textContent: "Edit first" });
+    use.title = "Put the prompt in the message box";
+    use.addEventListener("click", () => { input.value = p.text; grow(); input.focus(); closeLibrary(); });
+    const go = el("button", { type: "button", className: "primary", textContent: "Send" });
+    go.addEventListener("click", () => { closeLibrary(); ask(p.text); });
+    item.append(el("h3", { textContent: p.title }), serviceTags(p.resource), text, el("div", { className: "lib-actions" }, more, use, go));
+    list.appendChild(item);
+  });
+  if (!shown.length) list.appendChild(el("li", { className: "lib-empty", textContent: q ? "No prompt matches." : "The library is empty." }));
+}
+$("libSearch").addEventListener("input", renderLibrary);
+
+function closeLibrary() {
+  $("library").classList.remove("open");
+  $("libToggle").setAttribute("aria-expanded", "false");
+}
+$("libToggle").addEventListener("click", () => {
+  const open = $("library").classList.toggle("open");
+  $("libToggle").setAttribute("aria-expanded", String(open));
+});
 
 /* ---------- views ---------- */
 
@@ -141,8 +197,10 @@ function show(view) {
   $("chatView").hidden = view !== "chat";
   $("runnerView").hidden = view !== "runner";
   $("new").hidden = view !== "chat";
+  $("libToggle").hidden = view !== "chat";
   document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
   local.set("view", view);
+  history.replaceState(null, "", view === "runner" ? "#runner" : location.pathname);
   if (view === "chat") input.focus();
 }
 
@@ -158,7 +216,7 @@ async function loadPrompts() {
   editable = !!data.editable;
   [...selected].forEach(id => { if (!prompts.some(p => p.id === id)) selected.delete(id); });
   renderCatalog();
-  if (document.querySelector(".empty")) empty();  // refresh the chat's start buttons
+  renderLibrary();
 }
 
 function renderCatalog() {
@@ -173,20 +231,19 @@ function renderCatalog() {
     });
     const actions = el("div", { className: "actions" });
     if (adminCode) {
-      const edit = el("button", { type: "button", textContent: "Edit", disabled: running });
+      const edit = el("button", { type: "button", className: "ghost", textContent: "Edit", disabled: running });
       edit.addEventListener("click", () => openEditor(p));
-      const del = el("button", { type: "button", textContent: "Delete", disabled: running });
+      const del = el("button", { type: "button", className: "danger", textContent: "Delete", disabled: running });
       del.addEventListener("click", () => removePrompt(p));
       actions.append(edit, del);
     }
-    const li = el("li", { className: selected.has(p.id) ? "on" : "" },
+    list.appendChild(el("li", { className: selected.has(p.id) ? "on" : "" },
       box,
-      el("div", {}, el("div", { className: "title", textContent: p.title }), el("div", { className: "res", textContent: p.resource || "" })),
+      el("div", {}, el("div", { className: "title", textContent: p.title }), serviceTags(p.resource)),
       actions,
-      el("details", {}, el("summary", { textContent: "Prompt text" }), el("p", { textContent: p.text })));
-    list.appendChild(li);
+      el("details", {}, el("summary", { textContent: "Prompt text" }), el("p", { textContent: p.text }))));
   });
-  if (!prompts.length) list.appendChild(el("li", { className: "muted", textContent: "The catalog is empty." }));
+  if (!prompts.length) list.appendChild(el("li", { className: "lib-empty", textContent: "The catalog is empty." }));
 
   const n = prompts.filter(p => selected.has(p.id)).length;
   $("all").checked = n > 0 && n === prompts.length;
@@ -287,13 +344,12 @@ function resultCard(p) {
   const card = {
     status: el("span", { className: "pill running", textContent: "Waiting" }),
     tools: el("span", { className: "bar" }),
-    body: el("div", { className: "result-body" }),
+    body: el("div", {}),
     waiting: true,
   };
   card.root = el("article", { className: "result-card" },
     el("div", { className: "result-head" },
-      el("span", { className: "title", textContent: p.title }), card.status, card.tools,
-      el("span", { className: "res", textContent: p.resource || "" })),
+      el("span", { className: "title", textContent: p.title }), card.status, card.tools, serviceTags(p.resource)),
     card.body);
   results.appendChild(card.root);
   return card;
@@ -309,7 +365,7 @@ function fill(card, kind, label, tools, reply, reference) {
   card.root.className = "result-card " + kind;
   setStatus(card, kind, label);
   card.tools.replaceChildren(...(tools || []).map(c =>
-    el("span", { className: "pill " + (c.verdict || ""), textContent: (c.name || c.type) + " · " + (c.verdict || c.status || "?") })));
+    el("span", { className: "tool " + (c.verdict || ""), textContent: toolLabel(c) })));
   const parts = [];
   if (reply) parts.push(el("div", { className: "reply-block", textContent: reply }));
   const withOutput = (tools || []).filter(c => c.output);
@@ -318,7 +374,7 @@ function fill(card, kind, label, tools, reply, reference) {
       el("summary", { textContent: `Tool results (${withOutput.length})` }),
       withOutput.map(c => el("pre", { textContent: (c.name || c.type) + "\n" + c.output }))));
   }
-  if (reference) parts.push(el("div", { className: "muted small", textContent: "Reference: " + reference }));
+  if (reference) parts.push(el("div", { className: "muted small mono", textContent: "Reference " + reference }));
   card.body.replaceChildren(...parts);
 }
 
@@ -326,7 +382,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function runOne(p, card) {
   for (let attempt = 0; attempt < 5; attempt++) {
-    setStatus(card, "running", "Running…");
+    setStatus(card, "running", "Running");
     let r;
     try {
       r = await chatOnce(p.text, "");   // a new chat for every prompt
@@ -368,11 +424,16 @@ $("run").addEventListener("click", async () => {
   const cards = batch.map(resultCard);
   const started = new Date();
   for (let i = 0; i < batch.length && !stopRequested; i++) {
-    $("runState").textContent = `${i + 1} of ${batch.length}…`;
+    $("runState").textContent = `Running ${i + 1} of ${batch.length}`;
     await runOne(batch[i], cards[i]);
   }
   cards.forEach(c => { if (c.waiting) fill(c, "", "Skipped", [], ""); });
-  $("runState").textContent = (stopRequested ? "Stopped" : "Done") + " · started " + started.toLocaleTimeString();
+  const counts = cards.reduce((a, c) => {
+    const k = c.root.classList.contains("allowed") ? "allowed" : c.root.classList.contains("denied") ? "denied" : "other";
+    a[k]++; return a;
+  }, { allowed: 0, denied: 0, other: 0 });
+  $("runState").textContent = `${stopRequested ? "Stopped" : "Finished"} · ${counts.allowed} allowed · ${counts.denied} denied` +
+    (counts.other ? ` · ${counts.other} other` : "") + ` · started ${started.toLocaleTimeString()}`;
   running = false;
   renderCatalog();
 });
@@ -380,8 +441,8 @@ $("run").addEventListener("click", async () => {
 $("stop").addEventListener("click", () => { stopRequested = true; $("stop").disabled = true; setTimeout(() => { $("stop").disabled = false; }, 500); });
 $("clear").addEventListener("click", () => {
   if (running) return;
-  results.replaceChildren(el("p", { className: "muted", textContent: "No run yet." }));
-  $("runState").textContent = "";
+  results.replaceChildren();
+  $("runState").textContent = "No run yet.";
 });
 
 /* ---------- start ---------- */
@@ -392,13 +453,16 @@ input.addEventListener("keydown", e => {
 });
 input.addEventListener("input", grow);
 pass.addEventListener("change", () => store.set("passcode", pass.value));
-$("new").addEventListener("click", () => { conversation = ""; empty(); input.focus(); });
+$("new").addEventListener("click", () => { conversation = ""; welcome(); input.focus(); });
 document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => show(b.dataset.view)));
 
+welcome();
 fetch("/api/config").then(r => r.json()).then(c => {
-  $("agent").textContent = "· " + c.agent;
-  document.title = c.agent + " · Agent Chat";
+  agentName = c.agent;
+  $("agent").textContent = c.agent;
+  document.title = "AuthSec Agent Console · " + c.agent;
   if (c.passcode) { pass.hidden = false; pass.value = store.get("passcode"); }
+  if (document.querySelector(".welcome")) welcome();
 }).catch(() => { /* the header just stays generic */ });
 
 (async () => {
@@ -408,8 +472,7 @@ fetch("/api/config").then(r => r.json()).then(c => {
     const { ok } = await api("/api/admin/check", { method: "POST", json: {} });
     if (!ok) { adminCode = ""; store.set("admin", ""); }
   }
-  empty();
   await loadPrompts();
 })();
 
-show(local.get("view") === "runner" ? "runner" : "chat");
+show(location.hash === "#runner" || (!location.hash && local.get("view") === "runner") ? "runner" : "chat");
