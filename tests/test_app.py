@@ -127,7 +127,7 @@ class ChatTest(unittest.TestCase):
 
     def test_headers_and_health(self):
         r = self.http.get("/healthz")
-        self.assertEqual(r.get_json(), {"status": "ok"})
+        self.assertEqual(r.get_json(), {"status": "ok", "version": "local"})
         self.assertIn("default-src 'self'", r.headers["Content-Security-Policy"])
         self.assertEqual(r.headers["X-Frame-Options"], "DENY")
         self.assertTrue(r.headers["X-Request-Id"])

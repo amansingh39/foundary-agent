@@ -35,9 +35,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # Only what the app needs; App Service installs requirements.txt
-      # (SCM_DO_BUILD_DURING_DEPLOYMENT=true).
+      # (SCM_DO_BUILD_DURING_DEPLOYMENT=true). build.txt names the commit,
+      # which /healthz reports.
       - name: Package
-        run: zip -r app.zip app.py gunicorn.conf.py requirements.txt static
+        run: |
+          echo "$GITHUB_SHA" > build.txt
+          zip -r app.zip app.py gunicorn.conf.py requirements.txt build.txt static
 
       - uses: azure/login@v2
         with:
@@ -45,15 +48,20 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      # Returns once the package is built and in place. Not --track-status:
+      # on the Free plan Azure's startup report can lag the app by many
+      # minutes; the next step checks the app itself instead.
       - name: Deploy
-        run: az webapp deploy -g "$RESOURCE_GROUP" -n "$APP_NAME" --src-path app.zip --type zip --timeout 900000
+        run: az webapp deploy -g "$RESOURCE_GROUP" -n "$APP_NAME" --src-path app.zip --type zip --track-status false
 
-      - name: Check it answers
+      - name: Check the new version answers
         run: |
           host=$(az webapp show -g "$RESOURCE_GROUP" -n "$APP_NAME" --query defaultHostName -o tsv)
-          for i in $(seq 1 20); do
-            if curl -fsS "https://$host/healthz"; then echo; echo "up: https://$host"; exit 0; fi
+          for i in $(seq 1 40); do
+            running=$(curl -fsS -m 20 "https://$host/healthz" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+            if [ "$running" = "$GITHUB_SHA" ]; then echo "up: https://$host ($running)"; exit 0; fi
+            echo "waiting: running ${running:-nothing yet}"
             sleep 15
           done
-          echo "no answer from https://$host/healthz after 5 minutes" >&2
+          echo "https://$host did not start $GITHUB_SHA within 10 minutes" >&2
           exit 1

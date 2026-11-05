@@ -61,6 +61,12 @@ MASK_VALUES = os.environ.get("CHAT_MASK_VALUES", "true").lower() != "false"
 AGENT_TIMEOUT = env_int("CHAT_AGENT_TIMEOUT", 150)  # seconds; under gunicorn's timeout
 ON_APP_SERVICE = bool(os.environ.get("WEBSITE_SITE_NAME"))
 
+try:  # the commit the deploy workflow packaged
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build.txt"), encoding="utf-8") as f:
+        BUILD = f.read().strip()
+except OSError:
+    BUILD = "local"
+
 MAX_MESSAGE = 4000
 MAX_OUTPUT = 3000
 SCOPE = "https://ai.azure.com/.default"
@@ -272,8 +278,9 @@ def index():
 
 @app.get("/healthz")
 def healthz():
-    """Liveness for App Service's health check; does not call Azure."""
-    return jsonify(status="ok")
+    """Liveness for App Service's health check; does not call Azure. The
+    version lets the deploy workflow see that its own commit is running."""
+    return jsonify(status="ok", version=BUILD)
 
 
 @app.get("/api/config")
