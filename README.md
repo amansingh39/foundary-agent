@@ -42,13 +42,18 @@ identity that the AuthSec access policies block.
 5. Web app → **Configuration** → Startup Command: `gunicorn --config gunicorn.conf.py app:app` → Save.
 6. Web app → **Configuration** → General settings → **HTTPS Only: On**.
 7. Web app → **Health check** → path `/healthz`.
-8. Deploy from GitHub: web app → **Deployment Center** → Source **GitHub** → this repo, branch `main` →
-   Authentication **User-assigned identity** → **Save**. Azure commits a workflow to `.github/workflows/`
-   and every push to `main` deploys. (The Kudu drag-and-drop zip page does not exist on Linux;
-   a one-off zip deploy is `az webapp deploy -g <group> -n <app> --src-path <zip> --type zip`.)
+8. Deploy from GitHub with `.github/workflows/deploy.yml` (OpenID Connect, no stored password):
+   - A user-assigned managed identity in the resource group, with a federated credential
+     (GitHub Actions; `amansingh39` / `foundary-agent`, entity Branch `main`) and the
+     **Website Contributor** role on the web app.
+   - Repository variables (Settings → Secrets and variables → Actions → Variables):
+     `AZURE_CLIENT_ID` (the identity's client ID), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
+   - Every push to `main` runs the tests, deploys, and waits for `/healthz` to answer.
 9. Open the app's **Default domain** from its Overview page.
 
-`.github/workflows/test.yml` runs the tests on every push and pull request.
+`.github/workflows/test.yml` runs the tests on other branches and pull requests.
+(The Kudu drag-and-drop zip page does not exist on Linux; a one-off deploy is
+`az webapp deploy -g <group> -n <app> --src-path <zip> --type zip`.)
 
 Logs: web app → **Log stream**.
 

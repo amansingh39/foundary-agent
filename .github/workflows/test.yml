@@ -1,8 +1,11 @@
 name: test
 
+# main is tested by deploy.yml before it deploys.
 on:
   push:
+    branches-ignore: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read

@@ -1,0 +1,59 @@
+# Deploys main to the App Service once the tests pass.
+#
+# Signs in to Azure with OpenID Connect: a user-assigned managed identity
+# trusts this repository's main branch (federated credential
+# repo:amansingh39/foundary-agent:ref:refs/heads/main) and holds Website
+# Contributor on the web app only. No password or publish profile is stored
+# in GitHub; the three IDs below are repository variables, not secrets.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: iga-test
+  APP_NAME: authsec-agent-chat
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only what the app needs; App Service installs requirements.txt
+      # (SCM_DO_BUILD_DURING_DEPLOYMENT=true).
+      - name: Package
+        run: zip -r app.zip app.py gunicorn.conf.py requirements.txt static
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy
+        run: az webapp deploy -g "$RESOURCE_GROUP" -n "$APP_NAME" --src-path app.zip --type zip --timeout 900000
+
+      - name: Check it answers
+        run: |
+          host=$(az webapp show -g "$RESOURCE_GROUP" -n "$APP_NAME" --query defaultHostName -o tsv)
+          for i in $(seq 1 20); do
+            if curl -fsS "https://$host/healthz"; then echo; echo "up: https://$host"; exit 0; fi
+            sleep 15
+          done
+          echo "no answer from https://$host/healthz after 5 minutes" >&2
+          exit 1
