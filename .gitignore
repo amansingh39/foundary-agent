@@ -2,3 +2,4 @@
 __pycache__/
 .auth-record.json
 build.txt
+data/

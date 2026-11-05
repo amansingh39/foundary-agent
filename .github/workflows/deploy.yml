@@ -40,7 +40,7 @@ jobs:
       - name: Package
         run: |
           echo "$GITHUB_SHA" > build.txt
-          zip -r app.zip app.py gunicorn.conf.py requirements.txt build.txt static
+          zip -r app.zip app.py gunicorn.conf.py requirements.txt prompts_default.json build.txt static
 
       - uses: azure/login@v2
         with:

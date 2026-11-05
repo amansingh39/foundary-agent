@@ -18,7 +18,20 @@ identity that the AuthSec access policies block.
 - Errors give the visitor a short message and a reference; the details are in the log under that reference.
 - Security headers (CSP with no inline script, no framing, HSTS on HTTPS), 64 KB request limit, message length limit.
 - One log line per message: reference, address, conversation, tools used and their status, time taken (not the message text).
-- `/healthz` for App Service's health check.
+- `/healthz` for App Service's health check; it reports the deployed commit.
+
+## Test runner
+
+The **Test runner** tab holds a shared prompt catalog (starting from
+`prompts_default.json`, P1–P6). Tick prompts and press **Run selected**: each
+runs in a new chat, one after another, and the results table marks every tool
+call **Allowed** (data came back) or **Denied** (401/403, "forbidden",
+`AuthorizationFailed`, `AuthorizationPermissionMismatch`…). Built-in tools such
+as AI Search show no result to classify; read the reply for those.
+
+Anyone can run prompts. Adding, editing, deleting and resetting the catalog need
+`CHAT_ADMIN_PASSCODE` (**Edit catalog** on the page). The catalog lives in
+`CHAT_DATA_DIR`, outside the deployed code, so deploys keep it.
 
 ## Settings (App Service → Environment variables; all optional)
 
@@ -27,7 +40,9 @@ identity that the AuthSec access policies block.
 | `FOUNDRY_PROJECT_ENDPOINT` | the authsec-agent-iga-project-test-01 project | |
 | `FOUNDRY_AGENT_NAME` | `authsec-iga-agent-test` | |
 | `CHAT_PASSCODE` | none | set it to make visitors type a code |
-| `CHAT_RATE_PER_IP` | `20/600` | messages / seconds, per visitor |
+| `CHAT_ADMIN_PASSCODE` | none | lets whoever knows it edit the prompt catalog; unset = nobody can |
+| `CHAT_DATA_DIR` | `/home/data/agent-chat` on App Service, `./data` locally | where the catalog is kept |
+| `CHAT_RATE_PER_IP` | `40/600` | messages / seconds, per visitor (a test run counts one per prompt) |
 | `CHAT_DAILY_LIMIT` | `1000` | messages per UTC day, all visitors; `0` = no limit |
 | `CHAT_MASK_VALUES` | `true` | `false` shows Key Vault values in "Tool result" |
 | `CHAT_AGENT_TIMEOUT` | `150` | seconds to wait for the agent |

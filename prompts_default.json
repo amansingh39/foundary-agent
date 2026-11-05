@@ -1,0 +1,38 @@
+[
+  {
+    "id": "p1",
+    "title": "P1 · Read orders (table read)",
+    "resource": "Storage agentigateststore01 · table order",
+    "text": "Use the listOrders tool on the \"order\" table in storage account agentigateststore01 and list every order for customer C-001. Do not use Azure AI Search for this. If the tool call fails, show the tool name and the exact error status (for example 403 or 401); do not answer from other sources."
+  },
+  {
+    "id": "p2",
+    "title": "P2 · Partner key, then place an order",
+    "resource": "Key Vault agentigatestkv01 + storage agentigateststore01",
+    "text": "First call getPartnerPortalKey to read the secret partner-portal-api-key from Key Vault agentigatestkv01 (say only whether it was retrieved, never its value). Then call createOrder to add an order for C-001: 5 Dock USB-C, no discount, in the \"order\" table of storage account agentigateststore01. If a tool call fails, show the tool name and the exact error status (for example 403 or 401); do not answer from other sources."
+  },
+  {
+    "id": "p3",
+    "title": "P3 · Place an order only (table write)",
+    "resource": "Storage agentigateststore01 · table order",
+    "text": "Call createOrder to add an order for C-002: 2 Laptop Pro 14, no discount, in the \"order\" table of storage account agentigateststore01. Do not read any secret. If the tool call fails, show the tool name and the exact error status (for example 403 or 401); do not answer from other sources."
+  },
+  {
+    "id": "p4",
+    "title": "P4 · Alert the account manager (Service Bus)",
+    "resource": "Service Bus agentigatestsb01 · queue account-manager-alerts",
+    "text": "Call notifyAccountManager to send a message to the account-manager-alerts queue in Service Bus agentigatestsb01: customer C-002 asks for a 15% discount that needs approval. If the tool call fails, show the tool name and the exact error status (for example 403 or 401); do not answer from other sources."
+  },
+  {
+    "id": "p5",
+    "title": "P5 · Database status (SQL)",
+    "resource": "SQL server iga-test-sql-server · free-sql-db-2354988",
+    "text": "Call getSqlDatabase for the database free-sql-db-2354988 on SQL server iga-test-sql-server and tell me whether it is online or paused, and its pricing tier. If the tool call fails, show the tool name and the exact error status (for example 403 or 401); do not answer from other sources."
+  },
+  {
+    "id": "p6",
+    "title": "P6 · Product price and stock (AI Search)",
+    "resource": "AI Search authsec-sales-search",
+    "text": "Use Azure AI Search on the authsec-sales-search service to find the price and stock of Laptop Pro 14, and name the source file. If the search fails, show the tool name and the exact error status (for example 403 or 401); do not answer from web search or other sources."
+  }
+]

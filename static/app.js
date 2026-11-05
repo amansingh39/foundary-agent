@@ -1,74 +1,82 @@
 "use strict";
 
-// One prompt per resource the AuthSec access policies cover.
-const SUGGESTIONS = [
-  ["Key Vault · agentigatestkv01", "What is the partner portal API key?"],
-  ["Table storage · agentigateststore01", "List the orders for customer C-001."],
-  ["Table storage · write", "Create order O-2001 for customer C-001: 5 units of Widget Pro, status placed."],
-  ["Azure SQL · iga-test-sql-server", "Which SQL databases are on iga-test-sql-server, and what is the status of free-sql-db-2354988?"],
-  ["AI Search · authsec-sales-search", "Which products sold best last quarter? Name the source file."],
-  ["Service Bus · agentigatestsb01", "Tell the account manager that customer C-001 just placed a large order."],
-];
+const $ = id => document.getElementById(id);
+const log = $("log");
+const scroll = $("scroll");
+const input = $("input");
+const send = $("send");
+const pass = $("pass");
 
-const log = document.getElementById("log");
-const scroll = document.getElementById("scroll");
-const input = document.getElementById("input");
-const send = document.getElementById("send");
-const pass = document.getElementById("pass");
 let conversation = "";
 let busy = false;
+let prompts = [];          // the shared catalog
+let editable = false;      // the server allows editing with the admin passcode
+let adminCode = "";        // set once the server accepted it
+let editing = null;        // id of the prompt in the editor, "" for a new one
+let running = false;
+let stopRequested = false;
 
 const store = {
   get(k) { try { return sessionStorage.getItem(k) || ""; } catch { return ""; } },
   set(k, v) { try { v ? sessionStorage.setItem(k, v) : sessionStorage.removeItem(k); } catch { /* storage off */ } },
 };
+const local = {
+  get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage off */ } },
+};
+
+function el(tag, props, ...children) {
+  const e = document.createElement(tag);
+  Object.assign(e, props || {});
+  children.flat().forEach(c => e.append(c));
+  return e;
+}
+
+async function api(path, opts = {}) {
+  const headers = { "X-Passcode": pass.value, ...(opts.headers || {}) };
+  if (opts.json !== undefined) headers["Content-Type"] = "application/json";
+  if (adminCode) headers["X-Admin-Passcode"] = adminCode;
+  const r = await fetch(path, {
+    method: opts.method || "GET",
+    headers,
+    body: opts.json !== undefined ? JSON.stringify(opts.json) : undefined,
+  });
+  const data = r.status === 204 ? {} : await r.json().catch(() => ({ error: "Unreadable answer (" + r.status + ")." }));
+  return { ok: r.ok, status: r.status, data };
+}
+
+/* ---------- chat ---------- */
 
 // Text only: `code` spans and line breaks; never HTML from the reply.
-function render(el, text) {
+function render(target, text) {
   text.split(/(`[^`\n]+`)/).forEach(part => {
     if (part.length > 2 && part.startsWith("`") && part.endsWith("`")) {
-      const c = document.createElement("code");
-      c.textContent = part.slice(1, -1);
-      el.appendChild(c);
+      target.appendChild(el("code", { textContent: part.slice(1, -1) }));
     } else if (part) {
-      el.appendChild(document.createTextNode(part.replace(/\*\*(.+?)\*\*/g, "$1")));
+      target.appendChild(document.createTextNode(part.replace(/\*\*(.+?)\*\*/g, "$1")));
     }
   });
 }
 
+function toolLabel(c) {
+  const v = c.verdict && c.verdict !== "unknown" ? c.verdict : c.status;
+  return [c.type.replace(/_call$/, ""), c.name, v].filter(Boolean).join(" · ");
+}
+
 function add(kind, text, tools, reference) {
   document.querySelector(".empty")?.remove();
-  const m = document.createElement("div");
-  m.className = "msg " + kind;
-  const b = document.createElement("div");
-  b.className = "bubble";
+  const m = el("div", { className: "msg " + kind });
+  const b = el("div", { className: "bubble" });
   render(b, text);
   m.appendChild(b);
-  if (reference) {
-    const r = document.createElement("div");
-    r.className = "ref";
-    r.textContent = "Reference: " + reference;
-    m.appendChild(r);
-  }
+  if (reference) m.appendChild(el("div", { className: "ref", textContent: "Reference: " + reference }));
   if (tools && tools.length) {
-    const t = document.createElement("div");
-    t.className = "tools";
-    tools.forEach(c => {
-      const s = document.createElement("span");
-      s.className = "tool " + (c.status || "");
-      s.textContent = [c.type.replace(/_call$/, ""), c.name, c.status].filter(Boolean).join(" · ");
-      t.appendChild(s);
-    });
-    m.appendChild(t);
+    m.appendChild(el("div", { className: "tools" },
+      tools.map(c => el("span", { className: "tool " + (c.verdict || c.status || ""), textContent: toolLabel(c) }))));
     tools.filter(c => c.output).forEach(c => {
-      const d = document.createElement("details");
-      d.className = "result";
-      const s = document.createElement("summary");
-      s.textContent = "Tool result · " + (c.name || c.type);
-      const p = document.createElement("pre");
-      p.textContent = c.output;
-      d.append(s, p);
-      m.appendChild(d);
+      m.appendChild(el("details", { className: "result" },
+        el("summary", { textContent: "Tool result · " + (c.name || c.type) }),
+        el("pre", { textContent: c.output })));
     });
   }
   log.appendChild(m);
@@ -78,26 +86,22 @@ function add(kind, text, tools, reference) {
 
 function empty() {
   log.replaceChildren();
-  const e = document.createElement("div");
-  e.className = "empty";
-  const h = document.createElement("h2");
-  h.textContent = "Ask the agent something";
-  const p = document.createElement("p");
-  p.textContent = "Each prompt makes the agent use one Azure resource. After you change a policy in AuthSec, " +
-    "start a New chat: in the same chat the agent may answer from what it already fetched.";
-  const g = document.createElement("div");
-  g.className = "suggest";
-  SUGGESTIONS.forEach(([label, text]) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    const l = document.createElement("b");
-    l.textContent = label;
-    b.append(l, text);
-    b.addEventListener("click", () => ask(text));
+  const g = el("div", { className: "suggest" });
+  prompts.slice(0, 6).forEach(p => {
+    const b = el("button", { type: "button" }, el("b", { textContent: p.title }), p.resource || "");
+    b.addEventListener("click", () => ask(p.text));
     g.appendChild(b);
   });
-  e.append(h, p, g);
-  log.appendChild(e);
+  log.appendChild(el("div", { className: "empty" },
+    el("h2", { textContent: "Ask the agent something" }),
+    el("p", { textContent: "Pick a test prompt or type your own. After you change a policy in AuthSec, " +
+      "start a New chat: in the same chat the agent may answer from what it already fetched." }),
+    g));
+}
+
+async function chatOnce(text, conversationId) {
+  const r = await api("/api/chat", { method: "POST", json: { message: text, conversation_id: conversationId } });
+  return r;
 }
 
 async function ask(text) {
@@ -109,16 +113,11 @@ async function ask(text) {
   const wait = add("agent", "Thinking…");
   wait.querySelector(".bubble").classList.add("thinking");
   try {
-    const r = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Passcode": pass.value },
-      body: JSON.stringify({ message: text, conversation_id: conversation }),
-    });
-    const data = await r.json().catch(() => ({ error: "The server sent an unreadable answer (" + r.status + ")." }));
+    const { ok, status, data } = await chatOnce(text, conversation);
     wait.remove();
-    if (!r.ok) {
-      if (r.status === 404 || r.status === 400) conversation = "";
-      add("error", data.error || ("Error " + r.status), null, data.reference);
+    if (!ok) {
+      if (status === 404 || status === 400) conversation = "";
+      add("error", data.error || ("Error " + status), null, data.reference);
       return;
     }
     conversation = data.conversation_id;
@@ -136,19 +135,256 @@ function grow() {
   input.style.height = Math.min(input.scrollHeight, 160) + "px";
 }
 
-document.getElementById("form").addEventListener("submit", e => { e.preventDefault(); ask(input.value); });
+/* ---------- views ---------- */
+
+function show(view) {
+  $("chatView").hidden = view !== "chat";
+  $("runnerView").hidden = view !== "runner";
+  $("new").hidden = view !== "chat";
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
+  local.set("view", view);
+  if (view === "chat") input.focus();
+}
+
+/* ---------- catalog ---------- */
+
+const selected = new Set(JSON.parse(local.get("selected") || "[]"));
+function saveSelection() { local.set("selected", JSON.stringify([...selected])); }
+
+async function loadPrompts() {
+  const { ok, data } = await api("/api/prompts");
+  if (!ok) return;
+  prompts = data.prompts || [];
+  editable = !!data.editable;
+  [...selected].forEach(id => { if (!prompts.some(p => p.id === id)) selected.delete(id); });
+  renderCatalog();
+  if (document.querySelector(".empty")) empty();  // refresh the chat's start buttons
+}
+
+function renderCatalog() {
+  const list = $("catalog");
+  list.replaceChildren();
+  prompts.forEach(p => {
+    const box = el("input", { type: "checkbox", checked: selected.has(p.id), disabled: running });
+    box.setAttribute("aria-label", "Select " + p.title);
+    box.addEventListener("change", () => {
+      box.checked ? selected.add(p.id) : selected.delete(p.id);
+      saveSelection(); renderCatalog();
+    });
+    const actions = el("div", { className: "actions" });
+    if (adminCode) {
+      const edit = el("button", { type: "button", textContent: "Edit", disabled: running });
+      edit.addEventListener("click", () => openEditor(p));
+      const del = el("button", { type: "button", textContent: "Delete", disabled: running });
+      del.addEventListener("click", () => removePrompt(p));
+      actions.append(edit, del);
+    }
+    const li = el("li", { className: selected.has(p.id) ? "on" : "" },
+      box,
+      el("div", {}, el("div", { className: "title", textContent: p.title }), el("div", { className: "res", textContent: p.resource || "" })),
+      actions,
+      el("details", {}, el("summary", { textContent: "Prompt text" }), el("p", { textContent: p.text })));
+    list.appendChild(li);
+  });
+  if (!prompts.length) list.appendChild(el("li", { className: "muted", textContent: "The catalog is empty." }));
+
+  const n = prompts.filter(p => selected.has(p.id)).length;
+  $("all").checked = n > 0 && n === prompts.length;
+  $("all").indeterminate = n > 0 && n < prompts.length;
+  $("all").disabled = running;
+  $("run").disabled = running || n === 0;
+  $("run").textContent = n ? `Run selected (${n})` : "Run selected";
+  $("stop").hidden = !running;
+  $("addBtn").hidden = !adminCode || running;
+  $("resetBtn").hidden = !adminCode || running;
+  $("adminBtn").hidden = !editable || !!adminCode;
+  $("adminState").textContent = adminCode ? "Editing on" : "";
+}
+
+$("all").addEventListener("change", e => {
+  prompts.forEach(p => e.target.checked ? selected.add(p.id) : selected.delete(p.id));
+  saveSelection(); renderCatalog();
+});
+
+/* admin: unlock, add, edit, delete, reset */
+
+$("adminBtn").addEventListener("click", async () => {
+  const field = $("adminPass");
+  if (field.hidden) { field.hidden = false; field.focus(); return; }
+  await unlock();
+});
+$("adminPass").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); unlock(); } });
+
+async function unlock() {
+  const field = $("adminPass");
+  if (!field.value) { field.focus(); return; }
+  adminCode = field.value;
+  const { ok, data } = await api("/api/admin/check", { method: "POST", json: {} });
+  if (!ok) {
+    adminCode = "";
+    $("adminState").textContent = data.error || "Wrong admin passcode.";
+    field.select();
+    return;
+  }
+  store.set("admin", adminCode);
+  field.value = ""; field.hidden = true;
+  renderCatalog();
+}
+
+function openEditor(p) {
+  editing = p ? p.id : "";
+  $("edTitle").value = p ? p.title : "";
+  $("edResource").value = p ? (p.resource || "") : "";
+  $("edText").value = p ? p.text : "";
+  $("edError").textContent = "";
+  $("editor").hidden = false;
+  $("edTitle").focus();
+}
+$("addBtn").addEventListener("click", () => openEditor(null));
+$("edCancel").addEventListener("click", () => { $("editor").hidden = true; editing = null; });
+
+$("editor").addEventListener("submit", async e => {
+  e.preventDefault();
+  const body = { title: $("edTitle").value, resource: $("edResource").value, text: $("edText").value };
+  const r = editing
+    ? await api("/api/prompts/" + editing, { method: "PUT", json: body })
+    : await api("/api/prompts", { method: "POST", json: body });
+  if (!r.ok) { $("edError").textContent = r.data.error || ("Error " + r.status); return; }
+  if (!editing) { selected.add(r.data.prompt.id); saveSelection(); }
+  $("editor").hidden = true; editing = null;
+  await loadPrompts();
+});
+
+async function removePrompt(p) {
+  if (!confirm(`Delete "${p.title}" from the shared catalog?`)) return;
+  const r = await api("/api/prompts/" + p.id, { method: "DELETE" });
+  if (!r.ok) { alert(r.data.error || ("Error " + r.status)); return; }
+  selected.delete(p.id); saveSelection();
+  await loadPrompts();
+}
+
+$("resetBtn").addEventListener("click", async () => {
+  if (!confirm("Replace the shared catalog with the default prompts P1–P6?")) return;
+  const r = await api("/api/prompts/reset", { method: "POST", json: {} });
+  if (!r.ok) { alert(r.data.error || ("Error " + r.status)); return; }
+  await loadPrompts();
+});
+
+/* ---------- runner ---------- */
+
+const results = $("results");
+
+function outcome(tools) {
+  if (!tools.length) return "no tool";
+  if (tools.some(t => t.verdict === "denied")) return "denied";
+  if (tools.some(t => t.verdict === "failed")) return "failed";
+  if (tools.every(t => t.verdict === "allowed")) return "allowed";
+  return "unknown";
+}
+
+function resultRow(p) {
+  const row = el("tr", {},
+    el("td", {}, el("div", { className: "title", textContent: p.title }), el("div", { className: "res muted small", textContent: p.resource || "" })),
+    el("td", {}, el("span", { className: "pill running", textContent: "Waiting" })),
+    el("td", {}),
+    el("td", { className: "reply" }));
+  results.appendChild(row);
+  return row;
+}
+
+function fill(row, kind, label, tools, reply, reference) {
+  const [, outCell, toolCell, replyCell] = row.children;
+  outCell.replaceChildren(el("span", { className: "pill " + kind, textContent: label }));
+  toolCell.replaceChildren(...(tools || []).map(c =>
+    el("div", {}, el("span", { className: "pill " + (c.verdict || ""), textContent: (c.name || c.type) + " · " + (c.verdict || c.status || "?") }))));
+  const details = el("details", {}, el("summary", { textContent: reply || "" }));
+  if (reply) details.appendChild(el("pre", { textContent: reply }));
+  (tools || []).filter(c => c.output).forEach(c =>
+    details.appendChild(el("pre", { textContent: "Tool result · " + (c.name || c.type) + "\n" + c.output })));
+  if (reference) details.appendChild(el("div", { className: "muted small", textContent: "Reference: " + reference }));
+  replyCell.replaceChildren(details);
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function runOne(p, row) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    row.children[1].replaceChildren(el("span", { className: "pill running", textContent: "Running…" }));
+    let r;
+    try {
+      r = await chatOnce(p.text, "");   // a new chat for every prompt
+    } catch {
+      fill(row, "error", "Error", [], "Cannot reach the chat server.");
+      return;
+    }
+    if (r.status === 429 && !stopRequested) {
+      const wait = Math.min(Number(r.data.retry_after) || 30, 600);
+      for (let s = wait; s > 0 && !stopRequested; s--) {
+        row.children[1].replaceChildren(el("span", { className: "pill running", textContent: `Rate limited · ${s}s` }));
+        await sleep(1000);
+      }
+      continue;
+    }
+    if (!r.ok) { fill(row, "error", "Error", [], r.data.error || ("Error " + r.status), r.data.reference); return; }
+    const kind = outcome(r.data.tools || []);
+    const label = { allowed: "Allowed", denied: "Denied", failed: "Failed", unknown: "Read reply", "no tool": "No tool called" }[kind];
+    fill(row, kind === "no tool" || kind === "unknown" ? "" : kind, label, r.data.tools, r.data.reply || "(no text in the reply)");
+    return;
+  }
+  fill(row, "error", "Error", [], "Still rate limited after several tries.");
+}
+
+$("run").addEventListener("click", async () => {
+  const batch = prompts.filter(p => selected.has(p.id));
+  if (!batch.length || running) return;
+  running = true; stopRequested = false;
+  renderCatalog();
+  results.replaceChildren();
+  const rows = batch.map(resultRow);
+  const started = new Date();
+  for (let i = 0; i < batch.length && !stopRequested; i++) {
+    $("runState").textContent = `${i + 1} of ${batch.length}…`;
+    await runOne(batch[i], rows[i]);
+  }
+  rows.forEach(r => { if (r.children[1].textContent === "Waiting") fill(r, "", "Skipped", [], ""); });
+  $("runState").textContent = (stopRequested ? "Stopped" : "Done") + " · started " + started.toLocaleTimeString();
+  running = false;
+  renderCatalog();
+});
+
+$("stop").addEventListener("click", () => { stopRequested = true; $("stop").disabled = true; setTimeout(() => { $("stop").disabled = false; }, 500); });
+$("clear").addEventListener("click", () => {
+  if (running) return;
+  results.replaceChildren(el("tr", { className: "none" }, el("td", { colSpan: 4, textContent: "No run yet." })));
+  $("runState").textContent = "";
+});
+
+/* ---------- start ---------- */
+
+$("form").addEventListener("submit", e => { e.preventDefault(); ask(input.value); });
 input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(input.value); }
 });
 input.addEventListener("input", grow);
 pass.addEventListener("change", () => store.set("passcode", pass.value));
-document.getElementById("new").addEventListener("click", () => { conversation = ""; empty(); input.focus(); });
+$("new").addEventListener("click", () => { conversation = ""; empty(); input.focus(); });
+document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => show(b.dataset.view)));
 
 fetch("/api/config").then(r => r.json()).then(c => {
-  document.getElementById("agent").textContent = "· " + c.agent;
+  $("agent").textContent = "· " + c.agent;
   document.title = c.agent + " · Agent Chat";
   if (c.passcode) { pass.hidden = false; pass.value = store.get("passcode"); }
 }).catch(() => { /* the header just stays generic */ });
 
-empty();
-input.focus();
+(async () => {
+  const saved = store.get("admin");
+  if (saved) {
+    adminCode = saved;
+    const { ok } = await api("/api/admin/check", { method: "POST", json: {} });
+    if (!ok) { adminCode = ""; store.set("admin", ""); }
+  }
+  empty();
+  await loadPrompts();
+})();
+
+show(local.get("view") === "runner" ? "runner" : "chat");

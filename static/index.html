@@ -11,19 +11,77 @@
 <body>
 <header>
   <h1>Agent chat <small id="agent"></small></h1>
+  <nav class="tabs" aria-label="View">
+    <button type="button" data-view="chat" aria-pressed="true">Chat</button>
+    <button type="button" data-view="runner" aria-pressed="false">Test runner</button>
+  </nav>
   <input id="pass" type="password" placeholder="Passcode" autocomplete="off" aria-label="Passcode" hidden>
   <button id="new" type="button">New chat</button>
 </header>
-<main id="scroll"><div class="wrap" id="log" aria-live="polite"></div></main>
-<footer>
-  <div class="wrap">
-    <form id="form">
-      <textarea id="input" rows="1" maxlength="4000" aria-label="Message"
-        placeholder="Message the agent… (Enter to send, Shift+Enter for a new line)"></textarea>
-      <button class="primary" id="send" type="submit">Send</button>
-    </form>
-  </div>
-</footer>
+
+<main id="chatView">
+  <div class="scroll" id="scroll"><div class="wrap" id="log" aria-live="polite"></div></div>
+  <footer>
+    <div class="wrap">
+      <form id="form">
+        <textarea id="input" rows="1" maxlength="4000" aria-label="Message"
+          placeholder="Message the agent… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button class="primary" id="send" type="submit">Send</button>
+      </form>
+    </div>
+  </footer>
+</main>
+
+<main id="runnerView" hidden>
+  <div class="scroll"><div class="wrap runner">
+    <section aria-labelledby="catHead">
+      <div class="bar">
+        <h2 id="catHead">Prompt catalog</h2>
+        <span class="spacer"></span>
+        <span id="adminState" class="muted"></span>
+        <input id="adminPass" type="password" placeholder="Admin passcode" autocomplete="off" aria-label="Admin passcode" hidden>
+        <button id="adminBtn" type="button" hidden>Edit catalog</button>
+      </div>
+      <p class="muted">Tick the prompts to test and press Run. Each prompt runs in a new chat, one after another, so an earlier answer cannot leak into the next.</p>
+      <div class="bar">
+        <label class="check"><input type="checkbox" id="all"> Select all</label>
+        <span class="spacer"></span>
+        <button id="addBtn" type="button" hidden>+ Add prompt</button>
+        <button id="resetBtn" type="button" hidden>Reset to defaults</button>
+        <button id="stop" type="button" hidden>Stop</button>
+        <button id="run" class="primary" type="button" disabled>Run selected</button>
+      </div>
+      <form id="editor" class="editor" hidden>
+        <label>Title<input id="edTitle" maxlength="120" required placeholder="P7 · What it tests"></label>
+        <label>Resource<input id="edResource" maxlength="160" placeholder="Key Vault agentigatestkv01"></label>
+        <label>Prompt<textarea id="edText" rows="4" maxlength="4000" required></textarea></label>
+        <div class="bar">
+          <span id="edError" class="error-text"></span>
+          <span class="spacer"></span>
+          <button id="edCancel" type="button">Cancel</button>
+          <button class="primary" type="submit">Save</button>
+        </div>
+      </form>
+      <ul id="catalog" class="catalog"></ul>
+    </section>
+
+    <section aria-labelledby="resHead">
+      <div class="bar">
+        <h2 id="resHead">Results</h2>
+        <span id="runState" class="muted"></span>
+        <span class="spacer"></span>
+        <button id="clear" type="button">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Prompt</th><th>Outcome</th><th>Tools</th><th>Reply</th></tr></thead>
+          <tbody id="results"><tr class="none"><td colspan="4">No run yet.</td></tr></tbody>
+        </table>
+      </div>
+      <p class="muted small">Allowed: the tool got data back. Denied: Azure answered 401/403 or "forbidden". Unknown: Foundry shows no result for this tool (built-in tools such as AI Search); read the reply.</p>
+    </section>
+  </div></div>
+</main>
 <script src="/static/app.js"></script>
 </body>
 </html>

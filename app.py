@@ -55,14 +55,23 @@ ENDPOINT = os.environ.get(
 )
 AGENT = os.environ.get("FOUNDRY_AGENT_NAME", "authsec-iga-agent-test")
 PASSCODE = os.environ.get("CHAT_PASSCODE", "")  # empty: the page is open to anyone
-RATE_COUNT, RATE_WINDOW = env_rate("CHAT_RATE_PER_IP", "20/600")
+# Editing the shared prompt catalog; empty: nobody can edit it.
+ADMIN_PASSCODE = os.environ.get("CHAT_ADMIN_PASSCODE", "")
+RATE_COUNT, RATE_WINDOW = env_rate("CHAT_RATE_PER_IP", "40/600")
 DAILY_LIMIT = env_int("CHAT_DAILY_LIMIT", 1000)  # every visitor together; 0 = no limit
 MASK_VALUES = os.environ.get("CHAT_MASK_VALUES", "true").lower() != "false"
 AGENT_TIMEOUT = env_int("CHAT_AGENT_TIMEOUT", 150)  # seconds; under gunicorn's timeout
 ON_APP_SERVICE = bool(os.environ.get("WEBSITE_SITE_NAME"))
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+# Kept outside the deployed code so a deploy does not wipe the catalog;
+# /home survives restarts on App Service.
+DATA_DIR = os.environ.get("CHAT_DATA_DIR") or (
+    "/home/data/agent-chat" if ON_APP_SERVICE else os.path.join(HERE, "data")
+)
+
 try:  # the commit the deploy workflow packaged
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build.txt"), encoding="utf-8") as f:
+    with open(os.path.join(HERE, "build.txt"), encoding="utf-8") as f:
         BUILD = f.read().strip()
 except OSError:
     BUILD = "local"
@@ -70,9 +79,20 @@ except OSError:
 MAX_MESSAGE = 4000
 MAX_OUTPUT = 3000
 SCOPE = "https://ai.azure.com/.default"
-RECORD = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".auth-record.json")
+RECORD = os.path.join(HERE, ".auth-record.json")
 CONVERSATION_ID = re.compile(r"^[A-Za-z0-9_\-]{1,200}$")
 SECRET_VALUE = re.compile(r'("value"\s*:\s*")((?:[^"\\]|\\.)*)(")')
+# What Azure data planes answer when a role is missing: Key Vault
+# "Forbidden", Storage "AuthorizationPermissionMismatch", ARM
+# "AuthorizationFailed", or a bare 401/403 status.
+DENIED = re.compile(
+    r"forbidden|unauthori[sz]ed|authorizationfailed|authenticationfailed|authorizationpermissionmismatch"
+    r"|permission ?denied|access ?denied|does not have (?:authorization|permission)"
+    r"|\b(?:http|status|code|error)\W{0,4}40[13]\b|\b40[13] (?:forbidden|unauthorized)",
+    re.I,
+)
+MAX_PROMPTS = 100
+PROMPT_ID = re.compile(r"^[a-z0-9]{1,16}$")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("agent-chat")
@@ -117,6 +137,89 @@ class Limiter:
 
 
 limiter = Limiter(RATE_COUNT, RATE_WINDOW, DAILY_LIMIT)
+
+
+class Catalog:
+    """The shared list of test prompts: a JSON file, written whole and
+    atomically. Until someone edits it, the list is the defaults file."""
+
+    def __init__(self, path, defaults):
+        self.path, self.defaults = path, defaults
+        self.lock = threading.Lock()
+
+    def _read(self):
+        for p in (self.path, self.defaults):
+            try:
+                with open(p, encoding="utf-8") as f:
+                    return json.load(f)
+            except FileNotFoundError:
+                continue
+        return []
+
+    def _write(self, prompts):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(prompts, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, self.path)
+
+    def all(self):
+        with self.lock:
+            return self._read()
+
+    def add(self, fields):
+        with self.lock:
+            prompts = self._read()
+            if len(prompts) >= MAX_PROMPTS:
+                raise ValueError(f"The catalog holds at most {MAX_PROMPTS} prompts.")
+            prompt = {"id": uuid.uuid4().hex[:8], **fields}
+            prompts.append(prompt)
+            self._write(prompts)
+            return prompt
+
+    def update(self, pid, fields):
+        with self.lock:
+            prompts = self._read()
+            for p in prompts:
+                if p["id"] == pid:
+                    p.update(fields)
+                    self._write(prompts)
+                    return p
+            return None
+
+    def delete(self, pid):
+        with self.lock:
+            prompts = self._read()
+            kept = [p for p in prompts if p["id"] != pid]
+            if len(kept) == len(prompts):
+                return False
+            self._write(kept)
+            return True
+
+    def reset(self):
+        with self.lock:
+            try:
+                os.remove(self.path)
+            except FileNotFoundError:
+                pass
+            return self._read()
+
+
+catalog = Catalog(os.path.join(DATA_DIR, "prompts.json"), os.path.join(HERE, "prompts_default.json"))
+
+
+def prompt_fields(body):
+    """title, resource and text from a request, checked; raises ValueError."""
+    if not isinstance(body, dict):
+        raise ValueError("Send JSON with title, resource and text.")
+    fields = {k: str(body.get(k) or "").strip() for k in ("title", "resource", "text")}
+    if not fields["title"] or not fields["text"]:
+        raise ValueError("A prompt needs a title and its text.")
+    if len(fields["title"]) > 120 or len(fields["resource"]) > 160:
+        raise ValueError("Keep the title under 120 characters and the resource under 160.")
+    if len(fields["text"]) > MAX_MESSAGE:
+        raise ValueError(f"Keep the prompt under {MAX_MESSAGE} characters.")
+    return fields
 
 _client = None
 _client_lock = threading.Lock()
@@ -196,8 +299,22 @@ def shown(output):
     return text if len(text) <= MAX_OUTPUT else text[:MAX_OUTPUT] + "\n… (cut)"
 
 
+def verdict(status, output, error=None):
+    """allowed / denied from what the tool got back, failed when the call did
+    not finish, unknown when Foundry shows no result (built-in tools)."""
+    raw = "" if output is None else output if isinstance(output, str) else json.dumps(output)
+    if error:
+        raw += " " + (error if isinstance(error, str) else json.dumps(error))
+    if raw.strip():
+        return "denied" if DENIED.search(raw) else "allowed"
+    if status in ("failed", "incomplete"):
+        return "failed"
+    return "unknown"
+
+
 def tool_calls(response):
-    """What the agent called and what each call returned."""
+    """What the agent called, what each call returned, and whether Azure let
+    it through."""
     calls, by_id = [], {}
     for item in response.output or []:
         d = item.model_dump() if hasattr(item, "model_dump") else dict(item)
@@ -215,15 +332,22 @@ def tool_calls(response):
                 call = {"type": kind[: -len("_output")], "name": name, "status": d.get("status") or ""}
                 calls.append(call)
             call["output"] = shown(d.get("output"))
+            call["verdict"] = verdict(call["status"], d.get("output"), d.get("error"))
             continue
         call = {"type": kind, "name": name, "status": d.get("status") or ""}
         if d.get("output") is not None:
             call["output"] = shown(d.get("output"))
+        call["verdict"] = verdict(call["status"], d.get("output"), d.get("error"))
         calls.append(call)
         for key in ("call_id", "id"):
             if d.get(key):
                 by_id[d[key]] = call
     return calls
+
+
+def is_admin():
+    given = request.headers.get("X-Admin-Passcode", "").encode()
+    return bool(ADMIN_PASSCODE) and hmac.compare_digest(given, ADMIN_PASSCODE.encode())
 
 
 def failure(status, message, **extra):
@@ -285,7 +409,66 @@ def healthz():
 
 @app.get("/api/config")
 def config():
-    return jsonify(agent=AGENT, passcode=bool(PASSCODE))
+    return jsonify(agent=AGENT, passcode=bool(PASSCODE), editable=bool(ADMIN_PASSCODE))
+
+
+@app.get("/api/prompts")
+def list_prompts():
+    return jsonify(prompts=catalog.all(), editable=bool(ADMIN_PASSCODE))
+
+
+@app.post("/api/admin/check")
+def admin_check():
+    """Lets the page tell a wrong admin passcode before any edit."""
+    if not is_admin():
+        return failure(403, "Wrong admin passcode." if ADMIN_PASSCODE else "Editing is turned off on this server.")
+    return jsonify(ok=True)
+
+
+@app.post("/api/prompts")
+def add_prompt():
+    if not is_admin():
+        return failure(403, "Editing needs the admin passcode.")
+    try:
+        prompt = catalog.add(prompt_fields(request.get_json(silent=True)))
+    except ValueError as e:
+        return failure(400, str(e))
+    log.info("rid=%s prompt added %s", g.rid, prompt["id"])
+    return jsonify(prompt=prompt), 201
+
+
+@app.put("/api/prompts/<pid>")
+def update_prompt(pid):
+    if not is_admin():
+        return failure(403, "Editing needs the admin passcode.")
+    if not PROMPT_ID.match(pid):
+        return failure(404, "No such prompt.")
+    try:
+        prompt = catalog.update(pid, prompt_fields(request.get_json(silent=True)))
+    except ValueError as e:
+        return failure(400, str(e))
+    if prompt is None:
+        return failure(404, "No such prompt.")
+    log.info("rid=%s prompt updated %s", g.rid, pid)
+    return jsonify(prompt=prompt)
+
+
+@app.delete("/api/prompts/<pid>")
+def delete_prompt(pid):
+    if not is_admin():
+        return failure(403, "Editing needs the admin passcode.")
+    if not PROMPT_ID.match(pid) or not catalog.delete(pid):
+        return failure(404, "No such prompt.")
+    log.info("rid=%s prompt deleted %s", g.rid, pid)
+    return "", 204
+
+
+@app.post("/api/prompts/reset")
+def reset_prompts():
+    if not is_admin():
+        return failure(403, "Editing needs the admin passcode.")
+    log.info("rid=%s prompts reset to defaults", g.rid)
+    return jsonify(prompts=catalog.reset())
 
 
 @app.post("/api/chat")
@@ -345,7 +528,7 @@ def chat():
     log.info(
         "rid=%s ip=%s conversation=%s chars=%d tools=%s ms=%d",
         g.rid, who, conversation_id, len(message),
-        ",".join(f"{c['name'] or c['type']}:{c['status']}" for c in tools) or "-",
+        ",".join(f"{c['name'] or c['type']}:{c['verdict']}" for c in tools) or "-",
         (time.monotonic() - g.t0) * 1000,
     )
     return jsonify(reply=response.output_text or "", conversation_id=conversation_id, tools=tools)
