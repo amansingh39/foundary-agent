@@ -342,6 +342,14 @@ async function runOne(p, card) {
       }
       continue;
     }
+    if (!r.ok && r.data.verdict) {
+      // A tool's own HTTP call failed: 401/403 is the block working, any
+      // other status (409 Conflict…) got past authorization.
+      const code = r.data.upstream_status;
+      const label = r.data.verdict === "denied" ? `Denied · HTTP ${code}` : `Allowed · HTTP ${code}`;
+      fill(card, r.data.verdict, label, [], r.data.error, r.data.reference);
+      return;
+    }
     if (!r.ok) { fill(card, "error", "Error", [], r.data.error || ("Error " + r.status), r.data.reference); return; }
     const kind = outcome(r.data.tools || []);
     const label = { allowed: "Allowed", denied: "Denied", failed: "Failed", unknown: "Read reply", "no tool": "No tool called" }[kind];

@@ -347,6 +347,20 @@ def tool_calls(response):
     return calls
 
 
+UPSTREAM_STATUS = re.compile(r"HTTP error (\d{3})")
+
+
+def upstream(message):
+    """The status a tool's own HTTP call got, when Foundry reports it inside
+    its 400: 401/403 is Azure refusing the identity (denied); any other
+    status (409 Conflict, 404) means the call got past authorization."""
+    m = UPSTREAM_STATUS.search(message or "")
+    if not m:
+        return None, None
+    status = int(m[1])
+    return status, "denied" if status in (401, 403) else "allowed"
+
+
 def is_admin():
     given = request.headers.get("X-Admin-Passcode", "").encode()
     return bool(ADMIN_PASSCODE) and hmac.compare_digest(given, ADMIN_PASSCODE.encode())
@@ -515,10 +529,12 @@ def chat():
         return failure(404, "The agent or this conversation was not found. Start a new chat.")
     except openai.BadRequestError as e:
         # Foundry answers 400 when a tool cannot be called as its OpenAPI
-        # spec says (a missing required header, a bad parameter): the
-        # message names the tool and the problem, and the tester needs it.
+        # spec says, and also when the tool's own HTTP call failed: then the
+        # message carries "HTTP error <status>" and the upstream body.
         log.warning("rid=%s agent call rejected: %s", g.rid, e.message)
-        return failure(400, f"Foundry rejected the request: {e.message[:500]}")
+        status, tool_verdict = upstream(e.message)
+        return failure(400, f"Foundry rejected the request: {e.message[:2000]}",
+                       upstream_status=status, verdict=tool_verdict)
     except openai.RateLimitError as e:
         log.warning("rid=%s Foundry rate limit: %s", g.rid, e.message)
         return failure(503, "The model is busy. Try again in a minute.")

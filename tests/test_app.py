@@ -128,6 +128,22 @@ class ChatTest(unittest.TestCase):
             self.assertNotIn("internal-detail-xyz", r.get_json()["error"])
             self.assertTrue(r.get_json()["reference"])
 
+    def test_tool_http_errors_inside_foundrys_400(self):
+        def bad(msg):
+            req = httpx.Request("POST", "https://example.invalid/responses")
+            return openai.BadRequestError(msg, response=httpx.Response(400, request=req), body=None)
+
+        for msg, status, verdict in [
+            ("('HTTP error 403: Forbidden', 'http_client_error') AuthorizationPermissionMismatch", 403, "denied"),
+            ("('HTTP error 409: Conflict', 'http_client_error') EntityAlreadyExists", 409, "allowed"),
+            ("Missing required header parameter: Prefer", None, None),
+        ]:
+            chat_app._agent_key = None
+            self.use(bad(msg), bad("unknown parameter agent"))  # both keys refused: the first error is reported
+            j = self.post({"message": "order"}).get_json()
+            self.assertEqual((j.get("upstream_status"), j.get("verdict")), (status, verdict), msg)
+            self.assertIn(msg.split("'")[1] if "'" in msg else msg, j["error"])
+
     def test_headers_and_health(self):
         r = self.http.get("/healthz")
         self.assertEqual(r.get_json(), {"status": "ok", "version": "local"})
