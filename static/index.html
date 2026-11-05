@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Agent Chat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b4bdb'/%3E%3Cpath d='M9 11h14v9H15l-4 3v-3H9z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Agent chat <small id="agent"></small></h1>
+  <input id="pass" type="password" placeholder="Passcode" autocomplete="off" aria-label="Passcode" hidden>
+  <button id="new" type="button">New chat</button>
+</header>
+<main id="scroll"><div class="wrap" id="log" aria-live="polite"></div></main>
+<footer>
+  <div class="wrap">
+    <form id="form">
+      <textarea id="input" rows="1" maxlength="4000" aria-label="Message"
+        placeholder="Message the agent… (Enter to send, Shift+Enter for a new line)"></textarea>
+      <button class="primary" id="send" type="submit">Send</button>
+    </form>
+  </div>
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>
