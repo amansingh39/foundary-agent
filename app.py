@@ -268,19 +268,21 @@ def openai_client():
 def ask(client, conversation_id, text):
     global _agent_key
     keys = [_agent_key] if _agent_key else ["agent_reference", "agent"]
-    for i, key in enumerate(keys):
+    first = None
+    for key in keys:
         try:
             response = client.responses.create(
                 conversation=conversation_id,
                 input=text,
                 extra_body={key: {"name": AGENT, "type": "agent_reference"}},
             )
-        except openai.BadRequestError:
-            if i == len(keys) - 1:
-                raise
+        except openai.BadRequestError as e:
+            first = first or e
             continue
         _agent_key = key
         return response
+    # The first key's error: a tool's 400 must not turn into "unknown key".
+    raise first
 
 
 def masked(s):
@@ -511,6 +513,12 @@ def chat():
     except openai.NotFoundError as e:
         log.warning("rid=%s not found: %s", g.rid, e.message)
         return failure(404, "The agent or this conversation was not found. Start a new chat.")
+    except openai.BadRequestError as e:
+        # Foundry answers 400 when a tool cannot be called as its OpenAPI
+        # spec says (a missing required header, a bad parameter): the
+        # message names the tool and the problem, and the tester needs it.
+        log.warning("rid=%s agent call rejected: %s", g.rid, e.message)
+        return failure(400, f"Foundry rejected the request: {e.message[:500]}")
     except openai.RateLimitError as e:
         log.warning("rid=%s Foundry rate limit: %s", g.rid, e.message)
         return failure(503, "The model is busy. Try again in a minute.")

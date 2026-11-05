@@ -282,56 +282,73 @@ function outcome(tools) {
   return "unknown";
 }
 
-function resultRow(p) {
-  const row = el("tr", {},
-    el("td", {}, el("div", { className: "title", textContent: p.title }), el("div", { className: "res muted small", textContent: p.resource || "" })),
-    el("td", {}, el("span", { className: "pill running", textContent: "Waiting" })),
-    el("td", {}),
-    el("td", { className: "reply" }));
-  results.appendChild(row);
-  return row;
+// One card per prompt: title, outcome and tools on top, the whole reply below.
+function resultCard(p) {
+  const card = {
+    status: el("span", { className: "pill running", textContent: "Waiting" }),
+    tools: el("span", { className: "bar" }),
+    body: el("div", { className: "result-body" }),
+    waiting: true,
+  };
+  card.root = el("article", { className: "result-card" },
+    el("div", { className: "result-head" },
+      el("span", { className: "title", textContent: p.title }), card.status, card.tools,
+      el("span", { className: "res", textContent: p.resource || "" })),
+    card.body);
+  results.appendChild(card.root);
+  return card;
 }
 
-function fill(row, kind, label, tools, reply, reference) {
-  const [, outCell, toolCell, replyCell] = row.children;
-  outCell.replaceChildren(el("span", { className: "pill " + kind, textContent: label }));
-  toolCell.replaceChildren(...(tools || []).map(c =>
-    el("div", {}, el("span", { className: "pill " + (c.verdict || ""), textContent: (c.name || c.type) + " · " + (c.verdict || c.status || "?") }))));
-  const details = el("details", {}, el("summary", { textContent: reply || "" }));
-  if (reply) details.appendChild(el("pre", { textContent: reply }));
-  (tools || []).filter(c => c.output).forEach(c =>
-    details.appendChild(el("pre", { textContent: "Tool result · " + (c.name || c.type) + "\n" + c.output })));
-  if (reference) details.appendChild(el("div", { className: "muted small", textContent: "Reference: " + reference }));
-  replyCell.replaceChildren(details);
+function setStatus(card, kind, label) {
+  card.status.className = "pill " + kind;
+  card.status.textContent = label;
+}
+
+function fill(card, kind, label, tools, reply, reference) {
+  card.waiting = false;
+  card.root.className = "result-card " + kind;
+  setStatus(card, kind, label);
+  card.tools.replaceChildren(...(tools || []).map(c =>
+    el("span", { className: "pill " + (c.verdict || ""), textContent: (c.name || c.type) + " · " + (c.verdict || c.status || "?") })));
+  const parts = [];
+  if (reply) parts.push(el("div", { className: "reply-block", textContent: reply }));
+  const withOutput = (tools || []).filter(c => c.output);
+  if (withOutput.length) {
+    parts.push(el("details", {},
+      el("summary", { textContent: `Tool results (${withOutput.length})` }),
+      withOutput.map(c => el("pre", { textContent: (c.name || c.type) + "\n" + c.output }))));
+  }
+  if (reference) parts.push(el("div", { className: "muted small", textContent: "Reference: " + reference }));
+  card.body.replaceChildren(...parts);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function runOne(p, row) {
+async function runOne(p, card) {
   for (let attempt = 0; attempt < 5; attempt++) {
-    row.children[1].replaceChildren(el("span", { className: "pill running", textContent: "Running…" }));
+    setStatus(card, "running", "Running…");
     let r;
     try {
       r = await chatOnce(p.text, "");   // a new chat for every prompt
     } catch {
-      fill(row, "error", "Error", [], "Cannot reach the chat server.");
+      fill(card, "error", "Error", [], "Cannot reach the chat server.");
       return;
     }
     if (r.status === 429 && !stopRequested) {
       const wait = Math.min(Number(r.data.retry_after) || 30, 600);
       for (let s = wait; s > 0 && !stopRequested; s--) {
-        row.children[1].replaceChildren(el("span", { className: "pill running", textContent: `Rate limited · ${s}s` }));
+        setStatus(card, "running", `Rate limited · ${s}s`);
         await sleep(1000);
       }
       continue;
     }
-    if (!r.ok) { fill(row, "error", "Error", [], r.data.error || ("Error " + r.status), r.data.reference); return; }
+    if (!r.ok) { fill(card, "error", "Error", [], r.data.error || ("Error " + r.status), r.data.reference); return; }
     const kind = outcome(r.data.tools || []);
     const label = { allowed: "Allowed", denied: "Denied", failed: "Failed", unknown: "Read reply", "no tool": "No tool called" }[kind];
-    fill(row, kind === "no tool" || kind === "unknown" ? "" : kind, label, r.data.tools, r.data.reply || "(no text in the reply)");
+    fill(card, kind === "no tool" || kind === "unknown" ? "" : kind, label, r.data.tools, r.data.reply || "(no text in the reply)");
     return;
   }
-  fill(row, "error", "Error", [], "Still rate limited after several tries.");
+  fill(card, "error", "Error", [], "Still rate limited after several tries.");
 }
 
 $("run").addEventListener("click", async () => {
@@ -340,13 +357,13 @@ $("run").addEventListener("click", async () => {
   running = true; stopRequested = false;
   renderCatalog();
   results.replaceChildren();
-  const rows = batch.map(resultRow);
+  const cards = batch.map(resultCard);
   const started = new Date();
   for (let i = 0; i < batch.length && !stopRequested; i++) {
     $("runState").textContent = `${i + 1} of ${batch.length}…`;
-    await runOne(batch[i], rows[i]);
+    await runOne(batch[i], cards[i]);
   }
-  rows.forEach(r => { if (r.children[1].textContent === "Waiting") fill(r, "", "Skipped", [], ""); });
+  cards.forEach(c => { if (c.waiting) fill(c, "", "Skipped", [], ""); });
   $("runState").textContent = (stopRequested ? "Stopped" : "Done") + " · started " + started.toLocaleTimeString();
   running = false;
   renderCatalog();
@@ -355,7 +372,7 @@ $("run").addEventListener("click", async () => {
 $("stop").addEventListener("click", () => { stopRequested = true; $("stop").disabled = true; setTimeout(() => { $("stop").disabled = false; }, 500); });
 $("clear").addEventListener("click", () => {
   if (running) return;
-  results.replaceChildren(el("tr", { className: "none" }, el("td", { colSpan: 4, textContent: "No run yet." })));
+  results.replaceChildren(el("p", { className: "muted", textContent: "No run yet." }));
   $("runState").textContent = "";
 });
 
